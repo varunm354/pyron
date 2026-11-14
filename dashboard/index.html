@@ -316,15 +316,62 @@
       </div>
     </section>
 
-    <!-- ================= EVIDENCE (both views) ================= -->
+    <!-- ================= ASK NASA RESEARCH (both views) ================= -->
+    <section class="card research-card" id="research" aria-labelledby="research-title">
+      <div class="card-head">
+        <h2 id="research-title">Ask NASA research</h2>
+        <span class="badge badge-nasa">NASA DOCUMENTS</span>
+      </div>
+      <p class="nasa-intro">Searches three NASA technical documents stored on this server and returns short excerpts with links to the exact PDF page. Questions are answered from these documents only; live sensor readings are never sent anywhere.</p>
+
+      <div class="research-sources" id="research-sources" role="status">Loading document collection…</div>
+
+      <form class="ask-form" id="ask-form" novalidate>
+        <label class="field ask-field">
+          <span>Question</span>
+          <input type="text" id="ask-input" maxlength="500" autocomplete="off" placeholder="e.g. How does airflow affect flames in these experiments?">
+        </label>
+        <button type="submit" class="btn btn-primary" id="ask-button">Ask</button>
+      </form>
+      <div class="suggestions" aria-label="Suggested questions">
+        <span class="muted">Try:</span>
+        <button type="button" class="chip-btn">What did BASS-II measure?</button>
+        <button type="button" class="chip-btn">How does airflow affect flames in these experiments?</button>
+        <button type="button" class="chip-btn">Can flames persist at very low airflow?</button>
+        <button type="button" class="chip-btn">How does Saffire differ from BASS-II?</button>
+      </div>
+
+      <div class="ask-status" id="ask-status" role="status" aria-live="polite"></div>
+
+      <div class="ask-result" id="ask-result" hidden>
+        <div class="ask-mode" id="ask-mode"></div>
+        <div class="ask-answer" id="ask-answer" hidden></div>
+        <h3 class="ask-subhead" id="ask-evidence-title">Source excerpts</h3>
+        <div class="evidence-grid" id="ask-evidence"></div>
+      </div>
+    </section>
+
+    <!-- ================= EVIDENCE GUIDE (both views) ================= -->
     <section class="card evidence-card" aria-labelledby="evidence-title">
-      <div class="card-head"><h2 id="evidence-title">NASA evidence</h2></div>
-      <div class="empty-state">
-        <div class="empty-title">NASA experimental records available; paper-based interpretation pending</div>
-        <p>The BASS-II explorer above shows imported NASA experiment records as recorded. Interpretation from NASA papers has not been added yet, so no findings, citations, flame-spread curves, or extinction thresholds are stated or plotted here.</p>
+      <div class="card-head"><h2 id="evidence-title">How to read NASA evidence here</h2></div>
+      <div class="evidence-kinds">
+        <div class="kind">
+          <div class="kind-title">NASA observations</div>
+          <p>Recorded BASS-II measurements and excerpts from NASA documents. These describe experiments in microgravity, not the Pyron prototype.</p>
+        </div>
+        <div class="kind">
+          <div class="kind-title">Project interpretation</div>
+          <p>Pyron's damper response is a concept informed by NASA findings on airflow and flames. Closing dampers is not shown to guarantee flame extinction.</p>
+        </div>
+        <div class="kind">
+          <div class="kind-title">Prototype calibration</div>
+          <p>MQ-2 thresholds and servo angles need separate physical calibration. NASA data does not supply MQ-2 ADC thresholds.</p>
+        </div>
       </div>
       <ul class="caveats">
-        <li>This imported table contains no explicit flame-spread measurements.</li>
+        <li>This imported table contains no explicit flame-spread measurements. The NASA documents searched above do report flame-spread results.</li>
+        <li>Microgravity results do not directly validate performance in lunar or Martian partial gravity.</li>
+        <li>The cardboard habitat demonstrates sensing and actuation; it does not reproduce microgravity combustion.</li>
         <li>NASA CO and CO₂ measurements are not used to calibrate the MQ-2 sensor, and live readings are not overlaid on NASA data.</li>
         <li>Airflow values in the configuration are provisional prototype estimates, not NASA measurements.</li>
         <li>Damper angles are servo commands, not independently measured positions.</li>

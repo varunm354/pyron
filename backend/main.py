@@ -1,7 +1,8 @@
-"""Pyron Phase 1 backend: config + telemetry endpoints for the ESP32 habitat node.
+"""Pyron backend: ESP32 config/telemetry, the NASA BASS-II dataset, and NASA document search.
 
 The ESP32 is the HTTP client: it polls GET /config and posts POST /telemetry.
 It classifies ok/warn/alarm itself; this server stores what it reports.
+The research endpoints (/sources, /ask) are independent of the hardware endpoints.
 
 Telemetry is held in memory, so run a single server worker.
 """
@@ -25,9 +26,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator
 
-from backend import experiments
+from backend import experiments, research
+from backend.papers import DEFAULT_CORPUS_PATH
 
 logger = logging.getLogger("pyron")
 
@@ -168,6 +170,22 @@ class SimulateRequest(BaseModel):
     on: StrictBool
 
 
+class AskRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question: StrictStr
+
+    @field_validator("question")
+    @classmethod
+    def check_question(cls, value: str) -> str:
+        value = " ".join(value.split())
+        if not value:
+            raise ValueError("question must not be empty")
+        if len(value) > research.MAX_QUESTION_CHARS:
+            raise ValueError(f"question must be at most {research.MAX_QUESTION_CHARS} characters")
+        return value
+
+
 class PyronState:
     def __init__(self, config_path: Path, clock: Callable[[], float] = time.monotonic):
         self.config_path = config_path
@@ -235,14 +253,36 @@ def load_experiments(path: Path) -> tuple[experiments.Dataset | None, str | None
         return None, f"unexpected error while loading dataset: {exc.__class__.__name__}"
 
 
+def load_research(
+    path: Path, settings: research.LLMSettings, generator: research.Generator | None
+) -> tuple[research.Corpus | None, research.ResearchAssistant | None, str | None]:
+    # A missing corpus disables /ask but must not affect hardware or dataset endpoints.
+    try:
+        corpus = research.load_corpus(path)
+        return corpus, research.ResearchAssistant(corpus, settings, generator), None
+    except research.CorpusError as exc:
+        logger.warning("NASA document corpus unavailable: %s", exc)
+        return None, None, str(exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("NASA document corpus failed to load")
+        return None, None, f"unexpected error while loading corpus: {exc.__class__.__name__}"
+
+
 def create_app(
     config_path: Path | str | None = None,
     clock: Callable[[], float] = time.monotonic,
     dataset_path: Path | str | None = None,
+    corpus_path: Path | str | None = None,
+    llm_settings: research.LLMSettings | None = None,
+    generator: research.Generator | None = None,
 ) -> FastAPI:
     state = PyronState(Path(config_path) if config_path else DEFAULT_CONFIG_PATH, clock)
     dataset, dataset_error = load_experiments(
         Path(dataset_path) if dataset_path else experiments.DEFAULT_DATASET_PATH
+    )
+    settings = llm_settings if llm_settings is not None else research.load_llm_settings()
+    corpus, assistant, corpus_error = load_research(
+        Path(corpus_path) if corpus_path else DEFAULT_CORPUS_PATH, settings, generator
     )
 
     def dataset_unavailable() -> JSONResponse:
@@ -318,6 +358,30 @@ def create_app(
         if dataset is None:
             return dataset_unavailable()
         return dataset.summary
+
+    @app.get("/sources")
+    def list_sources() -> dict[str, Any]:
+        return research.sources_status(corpus, corpus_error, assistant, settings)
+
+    # Sync handler: FastAPI runs it in a worker thread, so retrieval and the optional
+    # blocking LLM request never stall the event loop serving /config and /telemetry.
+    @app.post("/ask")
+    def ask(body: AskRequest) -> Any:
+        if assistant is None:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "question": body.question,
+                    "mode": "retrieval",
+                    "answer": None,
+                    "statements": [],
+                    "evidence": [],
+                    "status": "corpus_unavailable",
+                    "status_message": f"NASA document collection unavailable: {corpus_error}",
+                    "error": f"NASA document collection unavailable: {corpus_error}",
+                },
+            )
+        return assistant.ask(body.question)
 
     return app
 

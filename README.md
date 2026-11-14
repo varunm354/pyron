@@ -17,6 +17,8 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -r backend/requirements.txt
 ```
 
+`pypdf` is used only by the ingestion script. The server reads the processed corpus.
+
 ### Run
 
 From the repository root:
@@ -77,9 +79,15 @@ records (see [NASA BASS-II dataset](#nasa-bass-ii-dataset)). It has search acros
 test number, and fuel material, a PI filter, a paginated table, and per-record
 details. It is fetched once per page load, never in the hardware polling loop.
 
-**NASA evidence** notes that NASA experimental records are now available, while
-paper-based interpretation is still pending. No findings, citations, flame-spread
-curves, or extinction thresholds are stated or plotted.
+**Ask NASA research** searches three NASA documents and shows short excerpts with
+PDF page links (see [NASA document research](#nasa-document-research-phase-4)). It
+works in both views and never uses telemetry.
+
+**How to read NASA evidence here** separates NASA observations, project
+interpretation, and prototype calibration, and lists the scientific limits: NASA data
+does not supply MQ-2 thresholds, closing dampers is not shown to guarantee
+extinction, the cardboard habitat does not reproduce microgravity, and microgravity
+results do not directly validate lunar or Martian partial-gravity performance.
 
 ### NASA BASS-II dataset
 
@@ -126,13 +134,105 @@ relationship. This imported table contains no explicit flame-spread measurements
 MQ-2 readings are never overlaid on NASA data or calibrated against NASA CO
 measurements.
 
+### NASA document research (Phase 4)
+
+Sources (official NASA Technical Reports Server PDFs):
+
+| ID | NTRS | Title |
+| --- | --- | --- |
+| `bass2-summary` | [20210011385](https://ntrs.nasa.gov/citations/20210011385) | BASS-II Summary Report |
+| `bass2-results` | [20160000593](https://ntrs.nasa.gov/citations/20160000593) | Combustion of Solids in Microgravity: Results from the BASS-II Experiment |
+| `saffire-results` | [20170008805](https://ntrs.nasa.gov/citations/20170008805) | Results of Large-Scale Spacecraft Flammability Tests |
+
+**Ingestion** (needs internet only the first time):
+
+```sh
+.venv/bin/python -m backend.ingest            # download missing PDFs, then build the corpus
+.venv/bin/python -m backend.ingest --offline  # rebuild from PDFs already in data/papers/
+```
+
+- PDFs are saved to `data/papers/` (gitignored; the BASS-II summary is about 49 MB).
+  Existing files are reused. Downloads use timeouts, and each file must start with
+  `%PDF-`. A non-PDF file already in place is reported, not overwritten.
+- If a download fails, the script names the failed source, records it as `missing`
+  in the corpus, and exits with status 1. To add a PDF by hand, save it in `data/papers/`
+  under the filename the script prints, then rerun. No other document is substituted.
+- Text is extracted page by page with `pypdf`, and whole sentences are packed into
+  chunks of about 110 words (170 maximum) **within a single page**. Each chunk keeps
+  `chunk_id` (`<doc>-p<page>-c<n>`), document ID, title, NTRS record URL, PDF URL, and
+  the **1-based PDF page index** (not the printed page label). The corpus is written
+  to `data/processed/nasa_corpus.json`.
+- Pages are classified and reported as empty (no extractable text), poorly extracted
+  (mostly non-letters: tables of contents, dense tables), or sparse (under 40 words).
+  Empty pages produce no chunks. Chunks from poorly extracted pages stay in the corpus
+  but are excluded from search. Current result: 540 chunks, of which 488 are
+  searchable. Pages with figures or scanned content are not OCR'd.
+- Symbol-font bullets (Unicode private-use characters) are written as `•`. Apart from
+  that and whitespace normalization, chunk text is the extracted text.
+
+**Retrieval** is local TF-IDF with cosine similarity, built in memory at startup. It
+uses no network, embeddings, or vector database. It returns at most 5 chunks
+(2 per page). A chunk must reach a minimum score and match enough of the question's
+distinctive words, counting words that never appear in the documents. Off-topic
+questions (for example "What is the capital of France?" or "What is the MQ-2 threshold
+for alarm?") therefore return `insufficient_evidence` instead of weak matches.
+Distinctive terms not covered by the top results get their best chunk added, so
+comparisons such as Saffire vs. BASS-II show both experiments. Displayed excerpts are
+at most about 300 characters around the best-matching sentence.
+
+Keyword search matches words, not meaning. For example, "Can flames persist at very
+low airflow?" finds airflow passages but misses the quenching-extinction pages, which
+say "flow" and "quenching". Asking "quenching extinction at very low flow" finds them.
+
+**Without API credentials** (the default), `/ask` returns `mode: "retrieval"`,
+`answer: null`, and the ranked excerpts. The dashboard labels this "EVIDENCE SEARCH ·
+not an AI answer". No canned answer is generated.
+
+**Optional AI answers (OpenAI).** Copy `.env.example` to `.env` (gitignored) and set
+both values, or export them in the shell (environment variables win), then restart
+the server:
+
+```sh
+OPENAI_API_KEY=...   # your own OpenAI API key
+OPENAI_MODEL=...     # a model on your account that supports structured outputs
+```
+
+You must supply your own OpenAI API key; a Cursor subscription does not provide one
+for this application. No model is chosen by default. When both are set:
+
+- Only the retrieved excerpts and the question are sent. Telemetry, configuration, and
+  the key itself are never included in the prompt or returned by any endpoint.
+- The system prompt treats excerpts as untrusted evidence, never as instructions, and
+  states the scientific limits above. The model must return strict JSON with at most
+  6 short statements, each listing supporting `chunk_ids`.
+- The server rejects the whole answer if any statement has no citation or cites a
+  chunk that was not retrieved for this question. It then falls back to evidence
+  search with `status: "invalid_citations"`.
+- Requests run in FastAPI's worker threads (not the event loop), with a 45 s timeout
+  and a 900-token output cap. On timeout, HTTP error, refusal, truncation, or invalid
+  JSON, `/ask` returns the evidence with `status: "provider_error"`. Model output is
+  display-only and cannot change configuration or hardware.
+- A valid citation ID shows that the cited chunk exists and was retrieved, not that it
+  supports the statement. Manually check generated answers against the cited pages.
+- **Not yet verified against the real API:** no key/model was configured during
+  development. The OpenAI request/response handling is tested only with mock
+  transports.
+
+`/ask` status values: `evidence_only`, `rag_answer`, `insufficient_evidence`,
+`model_insufficient_evidence`, `invalid_citations`, `provider_error`, and
+`corpus_unavailable` (HTTP 503). If the corpus file is missing or invalid, `/sources`
+reports `available: false`, `/ask` returns 503, and all other endpoints keep working.
+
 ### Test
 
 ```sh
 .venv/bin/python -m pytest
 ```
 
-Tests use temporary config files and never modify `backend/config.json`.
+Tests use temporary config files and never modify `backend/config.json`. Research
+tests use the committed corpus, fake generators, and mock HTTP transports; they make
+no network calls. The test that checks chunk text against its PDF page is skipped if
+the PDFs are not in `data/papers/`.
 
 ### Endpoints
 
@@ -145,6 +245,10 @@ Tests use temporary config files and never modify `backend/config.json`.
 | POST | `/telemetry` | Telemetry record from the ESP32 |
 | GET | `/telemetry/latest` | Latest record, its age, and online status |
 | GET | `/telemetry/history` | Last 120 records in server receipt order |
+| GET | `/experiments` | All 129 imported BASS-II records with provenance |
+| GET | `/experiments/summary` | Record, PI, flag, missing-value, and CO₂-plot counts |
+| GET | `/sources` | NASA documents, ingestion status, page/chunk counts, AI status |
+| POST | `/ask` | `{"question": "..."}` (1–500 chars): cited excerpts, plus an AI answer if configured |
 
 Notes:
 

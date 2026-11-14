@@ -55,6 +55,7 @@ async function fetchJSON(url, options = {}) {
       try {
         const body = await resp.json();
         if (typeof body.error === "string") detail = body.error;
+        else if (Array.isArray(body.detail)) detail = body.detail.map((d) => String(d.msg || "").replace(/^Value error, /, "")).join("; ");
         else detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
       } catch (_) { /* non-JSON error body */ }
       throw new Error(`HTTP ${resp.status}${detail ? ` — ${detail}` : ""}`);
@@ -941,5 +942,156 @@ scatter.addEventListener("keydown", (e) => {
 $("nasa-dialog-close").addEventListener("click", () => $("nasa-dialog").close());
 $("nasa-dialog").addEventListener("click", (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
 
+/* ------------------------------------------------------------------ */
+/* Ask NASA research (document search; optional AI answer)             */
+/* ------------------------------------------------------------------ */
+
+const ASK_TIMEOUT_MS = 70000;
+const ASK_MAX_CHARS = 500;
+const research = { seq: 0, busy: false };
+
+function link(url, text, cls) {
+  const href = safeHttpsUrl(url);
+  return href
+    ? el("a", { href, target: "_blank", rel: "noopener noreferrer", text, class: cls || "" })
+    : el("span", { text });
+}
+
+async function loadSources() {
+  const box = $("research-sources");
+  try {
+    const data = await fetchJSON("/sources", { timeoutMs: 10000 });
+    const docs = Array.isArray(data.documents) ? data.documents : [];
+    const items = docs.map((d) => {
+      const ok = d.status === "ingested";
+      const counts = ok ? `${d.page_count} PDF pages · ${d.chunk_count} excerpts` : (d.status === "missing" ? "download failed" : "not ingested");
+      return el("li", { class: ok ? "src-ok" : "src-missing" },
+        link(d.source_url, d.title, "src-title"),
+        el("span", { class: "muted", text: ` · NTRS ${d.ntrs_id} · ${counts}` }));
+    });
+    const ai = data.llm && data.llm.configured
+      ? `AI answers enabled (model: ${data.llm.model}). Answers are generated only from retrieved excerpts.`
+      : "AI answers off (no API key/model configured): results are evidence search only.";
+    const head = data.available
+      ? `Document collection ready · ${data.indexed_chunk_count} searchable excerpts. ${ai}`
+      : `Document collection unavailable: ${data.error}`;
+    box.dataset.tone = data.available ? "ok" : "error";
+    box.replaceChildren(el("div", { text: head }), el("ul", { class: "src-list" }, ...items));
+  } catch (err) {
+    box.dataset.tone = "error";
+    box.replaceChildren(el("div", { text: `Could not load document collection status: ${err.message}` }));
+  }
+}
+
+function setAskStatus(tone, text) {
+  const s = $("ask-status");
+  s.dataset.tone = tone;
+  setText(s, text);
+}
+
+function renderEvidence(evidence, numbers, mode) {
+  return evidence.map((e) => {
+    const n = numbers.get(e.chunk_id);
+    const tags = el("div", { class: "ev-tags" },
+      el("span", { class: "ev-num mono", text: `[${n}]` }),
+      mode === "rag" && e.cited ? el("span", { class: "tag tag-cited", text: "CITED" }) : null,
+      el("span", { class: "muted mono", text: e.chunk_id }));
+    return el("article", { class: "ev-card", id: `ev-${n}` },
+      tags,
+      el("div", { class: "ev-title", text: e.title }),
+      el("blockquote", { class: "ev-excerpt", text: e.excerpt }),
+      el("div", { class: "ev-links" },
+        link(e.page_url, `PDF page ${e.page}`),
+        el("span", { class: "muted", text: " · " }),
+        link(e.source_url, `NTRS ${e.ntrs_id}`),
+        el("span", { class: "muted", text: ` · relevance ${Number(e.score).toFixed(2)}` })),
+    );
+  });
+}
+
+function renderAsk(data) {
+  const evidence = Array.isArray(data.evidence) ? data.evidence : [];
+  const numbers = new Map(evidence.map((e, i) => [e.chunk_id, i + 1]));
+  const isRag = data.mode === "rag" && Array.isArray(data.statements) && data.statements.length > 0;
+
+  const mode = $("ask-mode");
+  mode.dataset.mode = isRag ? "rag" : "retrieval";
+  mode.replaceChildren(
+    el("span", { class: "badge mode-badge", text: isRag ? "AI ANSWER · generated from cited excerpts" : "EVIDENCE SEARCH · not an AI answer" }),
+    el("span", { class: "mode-msg", text: String(data.status_message || "") }),
+  );
+
+  const answer = $("ask-answer");
+  if (isRag) {
+    const list = el("ul", { class: "statements" }, ...data.statements.map((s) =>
+      el("li", {}, el("span", { text: s.text }), " ",
+        ...s.citations.filter((c) => numbers.has(c)).map((c) =>
+          el("a", { class: "cite mono", href: `#ev-${numbers.get(c)}`, text: `[${numbers.get(c)}]`, title: c })))));
+    answer.replaceChildren(
+      list,
+      el("p", { class: "fineprint", text: "Generated text can misstate its sources. Check each statement against the cited PDF pages before relying on it." }),
+    );
+    answer.hidden = false;
+  } else {
+    answer.replaceChildren();
+    answer.hidden = true;
+  }
+
+  setText($("ask-evidence-title"), evidence.length ? `Source excerpts (${evidence.length})` : "Source excerpts");
+  const grid = $("ask-evidence");
+  if (evidence.length) grid.replaceChildren(...renderEvidence(evidence, numbers, isRag ? "rag" : "retrieval"));
+  else grid.replaceChildren(el("p", { class: "muted", text: "No sufficiently relevant excerpts were found in the NASA document collection." }));
+  $("ask-result").hidden = false;
+}
+
+async function ask(question) {
+  question = question.replace(/\s+/g, " ").trim();
+  if (!question) {
+    setAskStatus("error", "Enter a question first.");
+    return;
+  }
+  if (question.length > ASK_MAX_CHARS) {
+    setAskStatus("error", `Questions are limited to ${ASK_MAX_CHARS} characters.`);
+    return;
+  }
+  const seq = ++research.seq;
+  research.busy = true;
+  $("ask-button").disabled = true;
+  setAskStatus("info", "Searching NASA documents…");
+  try {
+    const data = await fetchJSON("/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+      timeoutMs: ASK_TIMEOUT_MS,
+    });
+    if (seq !== research.seq) return;
+    setAskStatus("", "");
+    renderAsk(data);
+  } catch (err) {
+    if (seq !== research.seq) return;
+    $("ask-result").hidden = true;
+    setAskStatus("error", `Search failed: ${err.message}`);
+  } finally {
+    if (seq === research.seq) {
+      research.busy = false;
+      $("ask-button").disabled = false;
+    }
+  }
+}
+
+$("ask-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (!research.busy) ask($("ask-input").value);
+});
+document.querySelectorAll(".suggestions .chip-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (research.busy) return;
+    $("ask-input").value = btn.textContent;
+    ask(btn.textContent);
+  });
+});
+
 setView(location.hash === "#demo" ? "demo" : "hardware");
 loadNasa();
+loadSources();
