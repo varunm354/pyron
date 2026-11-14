@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PYRON — Habitat Fire Response Prototype</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230b1020'/%3E%3Cpath d='M8 2c1 3 4 4 4 8a4 4 0 0 1-8 0c0-2 1-3 2-4 0 2 1 3 2 3-1-2 0-5 0-7z' fill='%23ff7a1a'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body data-view="hardware">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <h1><span class="brand-name">PYRON</span> <span class="brand-sep">—</span> <span class="brand-sub">Habitat Fire Response Prototype</span></h1>
+    </div>
+
+    <div class="view-switch" role="tablist" aria-label="View">
+      <button type="button" role="tab" id="tab-hardware" aria-controls="hardware-view" aria-selected="true">Hardware</button>
+      <button type="button" role="tab" id="tab-demo" aria-controls="demo-view" aria-selected="false">Demo preview</button>
+    </div>
+
+    <div class="indicators" aria-live="polite">
+      <div class="indicator" id="ind-backend" data-tone="neutral">
+        <span class="dot" aria-hidden="true"></span>
+        <span class="ind-label">Backend</span>
+        <span class="ind-value" id="ind-backend-text">Connecting…</span>
+      </div>
+      <div class="indicator" id="ind-device" data-tone="neutral">
+        <span class="dot" aria-hidden="true"></span>
+        <span class="ind-label">ESP32</span>
+        <span class="ind-value" id="ind-device-text">Checking…</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- ================= HARDWARE VIEW ================= -->
+    <section id="hardware-view" class="view" role="tabpanel" aria-labelledby="tab-hardware">
+      <div class="banner banner-error" id="hw-backend-banner" hidden>
+        <strong>Backend unreachable.</strong>
+        <span id="hw-backend-banner-text">The dashboard cannot reach the Pyron server. ESP32 status is unknown.</span>
+      </div>
+
+      <div class="grid hw-grid">
+        <article class="card state-card" id="hw-state-card" data-state="waiting">
+          <div class="card-head">
+            <h2>Reported state</h2>
+            <span class="badge badge-stale" id="hw-stale-badge" hidden>STALE</span>
+          </div>
+          <div class="state-value" id="hw-state">WAITING</div>
+          <p class="state-sub" id="hw-state-sub">Waiting for ESP32</p>
+          <dl class="meta">
+            <div><dt>Device</dt><dd id="hw-device">—</dd></div>
+            <div><dt>Last received</dt><dd id="hw-received">—</dd></div>
+            <div><dt>Device uptime</dt><dd id="hw-uptime">—</dd></div>
+          </dl>
+          <p class="fineprint">State is classified by the ESP32 and displayed as reported. The dashboard does not infer it from gas readings.</p>
+        </article>
+
+        <article class="card readings-card" id="hw-readings-card">
+          <div class="card-head"><h2>Readings</h2></div>
+          <div class="reading-grid">
+            <div class="reading reading-primary">
+              <div class="reading-label">MQ-2 raw reading</div>
+              <div class="reading-value"><span id="hw-mq2">—</span></div>
+              <div class="reading-unit">ADC counts (0–4095)</div>
+            </div>
+            <div class="reading">
+              <div class="reading-label">Reported damper position</div>
+              <div class="reading-value"><span id="hw-damper">—</span></div>
+              <div class="reading-unit">as reported by ESP32</div>
+            </div>
+            <div class="reading">
+              <div class="reading-label">Commanded damper angle</div>
+              <div class="reading-value"><span id="hw-damper-deg">—</span></div>
+              <div class="reading-unit">servo command, not measured position</div>
+            </div>
+            <div class="reading">
+              <div class="reading-label">Estimated airflow <span class="tag">ESTIMATE</span></div>
+              <div class="reading-value"><span id="hw-airflow">—</span></div>
+              <div class="reading-unit" id="hw-airflow-note">provisional estimate, not measured</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="card config-card">
+          <div class="card-head"><h2>Configuration</h2></div>
+          <dl class="meta meta-wide">
+            <div><dt>Backend config version</dt><dd class="mono" id="hw-cfg-version">—</dd></div>
+            <div><dt>Device-reported config version</dt><dd class="mono" id="hw-dev-version">—</dd></div>
+            <div><dt>Response mode</dt><dd id="hw-cfg-mode">—</dd></div>
+            <div><dt>Force alarm (simulate)</dt><dd id="hw-cfg-sim">—</dd></div>
+          </dl>
+          <div class="confirm" id="hw-confirm" data-tone="neutral">
+            <span class="dot" aria-hidden="true"></span>
+            <div>
+              <div class="confirm-title" id="hw-confirm-title">—</div>
+              <div class="confirm-detail" id="hw-confirm-detail"></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="card chart-card">
+          <div class="card-head">
+            <h2>MQ-2 gas reading</h2>
+            <span class="card-caption" id="hw-chart-caption">ADC counts · server receipt order</span>
+          </div>
+          <svg class="chart" id="hw-chart" viewBox="0 0 640 240" role="img" aria-label="MQ-2 ADC readings over recent samples"></svg>
+          <div class="legend">
+            <span class="lg lg-line">Reported MQ-2 (ADC)</span>
+            <span class="lg lg-warn">Warn threshold</span>
+            <span class="lg lg-alarm">Alarm threshold</span>
+            <span class="lg lg-clear">Clear threshold</span>
+          </div>
+        </article>
+
+        <article class="card controls-card">
+          <div class="card-head"><h2>Controls</h2><span class="card-caption">Affects connected hardware</span></div>
+
+          <fieldset class="control-group">
+            <legend>Response mode</legend>
+            <div class="mode-buttons">
+              <button type="button" class="mode-btn" data-mode="nasa" aria-pressed="false">
+                <span class="mode-title">NASA-inspired response</span>
+                <span class="mode-desc">Alarm closes dampers to limit airflow</span>
+              </button>
+              <button type="button" class="mode-btn" data-mode="earth" aria-pressed="false">
+                <span class="mode-title">Ventilation-on comparison</span>
+                <span class="mode-desc">Dampers stay open in every state</span>
+              </button>
+            </div>
+            <p class="fineprint">The ventilation-on comparison is a demo baseline for contrast. It is not a recommended Earth fire procedure.</p>
+          </fieldset>
+
+          <fieldset class="control-group">
+            <legend>Hardware simulation</legend>
+            <label class="switch">
+              <input type="checkbox" id="hw-sim-toggle">
+              <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+              <span class="switch-label">Force alarm on ESP32</span>
+            </label>
+            <p class="fineprint">Affects connected hardware on its next config fetch (about every 2 s). The ESP32 then reports ALARM and applies the current mode's alarm response: NASA-inspired → dampers closed, ventilation-on → dampers open.</p>
+            <p class="fineprint" id="hw-alarm-response"></p>
+          </fieldset>
+
+          <div class="control-status" id="hw-control-status" role="status" aria-live="polite"></div>
+        </article>
+      </div>
+    </section>
+
+    <!-- ================= DEMO VIEW ================= -->
+    <section id="demo-view" class="view" role="tabpanel" aria-labelledby="tab-demo" hidden>
+      <div class="banner banner-demo">
+        <strong>DEMO — synthetic readings</strong>
+        <span>Generated in this browser only. Nothing here is sent to the backend or the ESP32, and hardware configuration is not changed.</span>
+      </div>
+
+      <div class="demo-toolbar card">
+        <div class="demo-buttons">
+          <button type="button" class="btn btn-primary" id="demo-start">Start scenario</button>
+          <button type="button" class="btn" id="demo-reset">Reset</button>
+        </div>
+        <ol class="phase-track" aria-label="Scenario phases">
+          <li data-phase="ok">OK</li>
+          <li data-phase="warn">WARNING</li>
+          <li data-phase="alarm">ALARM</li>
+        </ol>
+        <div class="demo-progress">
+          <div class="progress-bar"><span id="demo-progress-fill"></span></div>
+          <span class="mono" id="demo-clock">0.0 s / 24.0 s</span>
+        </div>
+      </div>
+
+      <div class="grid demo-grid">
+        <article class="card state-card" id="demo-state-card" data-state="idle">
+          <div class="card-head"><h2>Synthetic state</h2><span class="badge badge-demo">DEMO</span></div>
+          <div class="state-value" id="demo-state">READY</div>
+          <p class="state-sub" id="demo-state-sub">Press Start scenario to run OK → WARNING → ALARM.</p>
+          <div class="reading reading-primary">
+            <div class="reading-label">Synthetic MQ-2 reading</div>
+            <div class="reading-value"><span id="demo-mq2">—</span></div>
+            <div class="reading-unit">ADC counts (0–4095), generated</div>
+          </div>
+          <p class="fineprint">Demo classification runs in the browser with fixed illustrative thresholds (warn 1200, alarm 2000). It is not the ESP32 firmware.</p>
+        </article>
+
+        <article class="card chart-card">
+          <div class="card-head"><h2>Synthetic gas reading</h2><span class="card-caption">ADC counts · generated samples</span></div>
+          <svg class="chart" id="demo-chart" viewBox="0 0 640 240" role="img" aria-label="Synthetic MQ-2 readings"></svg>
+          <div class="legend">
+            <span class="lg lg-line">Synthetic MQ-2 (ADC)</span>
+            <span class="lg lg-warn">Warn threshold</span>
+            <span class="lg lg-alarm">Alarm threshold</span>
+          </div>
+        </article>
+
+        <article class="card compare-card">
+          <div class="card-head"><h2>Response comparison</h2><span class="card-caption">Same synthetic readings, two response modes</span></div>
+          <div class="compare-grid">
+            <div class="damper-panel" id="demo-panel-nasa" data-mode="nasa">
+              <div class="damper-title">NASA-inspired response</div>
+              <svg class="damper-svg" viewBox="0 0 220 110" aria-hidden="true">
+                <rect class="duct" x="6" y="25" width="208" height="60" rx="6"/>
+                <g class="flow"><path d="M14 45 H206 M14 55 H206 M14 65 H206"/></g>
+                <line class="pivot-axis" x1="110" y1="25" x2="110" y2="85"/>
+                <g class="blade-wrap"><rect class="blade" x="106" y="28" width="8" height="54" rx="3"/></g>
+                <circle class="pivot" cx="110" cy="55" r="4"/>
+              </svg>
+              <dl class="meta">
+                <div><dt>Damper</dt><dd class="damper-pos">—</dd></div>
+                <div><dt>Commanded angle</dt><dd class="damper-deg">—</dd></div>
+                <div><dt>Est. airflow</dt><dd class="damper-air">—</dd></div>
+              </dl>
+            </div>
+            <div class="damper-panel" id="demo-panel-earth" data-mode="earth">
+              <div class="damper-title">Ventilation-on comparison</div>
+              <svg class="damper-svg" viewBox="0 0 220 110" aria-hidden="true">
+                <rect class="duct" x="6" y="25" width="208" height="60" rx="6"/>
+                <g class="flow"><path d="M14 45 H206 M14 55 H206 M14 65 H206"/></g>
+                <line class="pivot-axis" x1="110" y1="25" x2="110" y2="85"/>
+                <g class="blade-wrap"><rect class="blade" x="106" y="28" width="8" height="54" rx="3"/></g>
+                <circle class="pivot" cx="110" cy="55" r="4"/>
+              </svg>
+              <dl class="meta">
+                <div><dt>Damper</dt><dd class="damper-pos">—</dd></div>
+                <div><dt>Commanded angle</dt><dd class="damper-deg">—</dd></div>
+                <div><dt>Est. airflow</dt><dd class="damper-air">—</dd></div>
+              </dl>
+            </div>
+          </div>
+          <p class="fineprint">Airflow values are provisional estimates (open 15, half 7, closed 0 cm/s), not measurements. The ventilation-on comparison is a demo baseline, not a recommended Earth fire procedure.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ================= EVIDENCE (both views) ================= -->
+    <section class="card evidence-card" aria-labelledby="evidence-title">
+      <div class="card-head"><h2 id="evidence-title">NASA evidence</h2></div>
+      <div class="empty-state">
+        <div class="empty-title">NASA reference data not loaded</div>
+        <p>No NASA reference curves, numbers, citations, or findings are included in this prototype yet, so none are plotted or quoted here.</p>
+      </div>
+      <ul class="caveats">
+        <li>Airflow values in the configuration are provisional estimates, not measurements.</li>
+        <li>Damper angles are servo commands, not independently measured positions.</li>
+        <li>Gas readings are raw MQ-2 ADC counts, not calibrated concentrations.</li>
+      </ul>
+    </section>
+  </main>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
