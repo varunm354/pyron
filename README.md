@@ -72,8 +72,59 @@ or show the ESP32 as connected, and hardware polling pauses while it is open.
 Leaving the preview stops its timer and discards its synthetic data. You can open
 the preview directly at `http://localhost:8000/#demo`.
 
-**NASA evidence** currently shows "NASA reference data not loaded". No NASA numbers,
-citations, or reference curves are included yet.
+**BASS-II experiment explorer** appears in both views and shows NASA experiment
+records (see [NASA BASS-II dataset](#nasa-bass-ii-dataset)). It has search across PI,
+test number, and fuel material, a PI filter, a paginated table, and per-record
+details. It is fetched once per page load, never in the hardware polling loop.
+
+**NASA evidence** notes that NASA experimental records are now available, while
+paper-based interpretation is still pending. No findings, citations, flame-spread
+curves, or extinction thresholds are stated or plotted.
+
+### NASA BASS-II dataset
+
+- **File:** `data/processed/bass_ii_combined.csv` (UTF-8 with BOM). It is read once at
+  server startup, from a path resolved relative to the project source, not the shell
+  directory. The server never modifies, regenerates, or repairs it.
+- **Source:** [NASA PSI-25 (BASS-II)](https://psi.nasa.gov/physci/repo/data/investigations/PSI-25).
+- **Provenance:** each record keeps the 17 original NASA table columns as their original
+  cell text, plus `record_id` (stable identifier), `source_file`, `source_row`,
+  `source_url`, `quality_flags`, and `dataset_note`.
+- **Numeric fields:** `numeric__` columns are used for calculations and the chart. Blank
+  or nonnumeric values are returned as `null`, never 0. Negative values are kept as
+  they are. Values are always finite JSON numbers (never NaN or Infinity). `Fan display`
+  and `Air display` are mixed free text; no airflow value or unit is extracted from them.
+- **Completeness:** 129 records were imported, but the source website displayed 130.
+  This is an imported subset with completeness pending reconciliation; no record has
+  been invented to fill the gap.
+- **Review flags:** 17 records carry source-review flags: negative initial CO values,
+  final O₂ above 30%, and dates in 2018. These mark values to check against the
+  source; they are not proven errors, and flagged records stay in the table and chart.
+- **Validation:** if the file is missing or invalid (wrong row count, missing required
+  columns, or duplicate/blank `record_id`), `/experiments` and `/experiments/summary`
+  return HTTP 503 with `"available": false` and an `error` message. The dashboard
+  shows that message in the NASA section, and the hardware endpoints keep working.
+
+API:
+
+- `GET /experiments` returns `{"items", "count", "source_url", "completeness_note"}`.
+- `GET /experiments/summary` returns:
+  - the record count, distinct PI count, and flagged-record count;
+  - missing-value counts for the six gas columns;
+  - the CO₂ scatter's usable/excluded counts (currently 121 / 8);
+  - the source URL and completeness note.
+
+**Chart: "BASS-II initial vs final CO₂".** Each point is one record, plotting
+`numeric__Initial CO2 % by vol` (x) against `numeric__Final CO2 % by vol` (y) on the same
+scale for both axes. The dashed y = x line marks no change. Records missing either value
+are excluded, and the plotted/excluded counts are shown for the current search and PI
+filter. Records with identical values share an enlarged point labeled ×n. Hovering shows
+the records at a point, clicking pins them with links to full details, and arrow keys move
+between points. The chart compares before/after measurements across experiments with
+different materials and test conditions. It does not establish a causal airflow
+relationship. This imported table contains no explicit flame-spread measurements. Live
+MQ-2 readings are never overlaid on NASA data or calibrated against NASA CO
+measurements.
 
 ### Test
 

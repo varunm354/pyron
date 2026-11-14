@@ -233,20 +233,124 @@
       </div>
     </section>
 
+    <!-- ================= NASA DATA (both views) ================= -->
+    <section class="card nasa-card" id="nasa" aria-labelledby="nasa-title">
+      <div class="card-head">
+        <h2 id="nasa-title">BASS-II experiment explorer</h2>
+        <span class="badge badge-nasa">NASA RECORDED DATA</span>
+      </div>
+      <p class="nasa-intro">Recorded measurements from NASA's BASS-II investigation (PSI-25). These are separate from the live MQ-2 ADC counts and from the prototype's estimated airflow, and neither is derived from the other.</p>
+
+      <div class="nasa-status" id="nasa-loading" role="status">Loading NASA records…</div>
+      <div class="banner banner-error" id="nasa-unavailable" role="alert" hidden>
+        <strong>NASA dataset unavailable.</strong>
+        <span id="nasa-unavailable-text"></span>
+      </div>
+
+      <div id="nasa-body" hidden>
+        <div class="nasa-stats">
+          <div class="stat"><span class="stat-value mono" id="nasa-count">—</span><span class="stat-label">imported records</span></div>
+          <div class="stat"><span class="stat-value mono" id="nasa-pis">—</span><span class="stat-label">principal investigators</span></div>
+          <div class="stat"><span class="stat-value mono" id="nasa-flagged">—</span><span class="stat-label">records with source-review flags</span></div>
+          <div class="stat stat-note">
+            <span class="stat-label">Completeness</span>
+            <span id="nasa-completeness"></span>
+            <span class="fineprint-inline">Imported subset; completeness pending reconciliation with the source.</span>
+            <a id="nasa-source" target="_blank" rel="noopener noreferrer">NASA PSI-25 source</a>
+          </div>
+        </div>
+
+        <div class="nasa-filters">
+          <label class="field">
+            <span>Search</span>
+            <input type="search" id="nasa-search" placeholder="PI, test #, or fuel material" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>PI</span>
+            <select id="nasa-pi"><option value="">All PIs</option></select>
+          </label>
+          <span class="nasa-match" id="nasa-match-count" aria-live="polite"></span>
+        </div>
+
+        <div class="nasa-grid">
+          <div class="nasa-table-wrap">
+            <div class="table-scroll">
+              <table class="nasa-table">
+                <thead>
+                  <tr>
+                    <th scope="col">PI</th>
+                    <th scope="col">Test #</th>
+                    <th scope="col">Fuel sample material</th>
+                    <th scope="col" class="num">Initial CO₂<br><small>% by vol</small></th>
+                    <th scope="col" class="num">Final CO₂<br><small>% by vol</small></th>
+                    <th scope="col">Review status</th>
+                  </tr>
+                </thead>
+                <tbody id="nasa-tbody"></tbody>
+              </table>
+            </div>
+            <div class="pager">
+              <button type="button" class="btn btn-small" id="nasa-prev">Previous</button>
+              <span class="mono" id="nasa-page"></span>
+              <button type="button" class="btn btn-small" id="nasa-next">Next</button>
+            </div>
+            <p class="fineprint">CO₂ cells show the original NASA table text. Select a row for all 17 original fields and provenance. Review flags mark values for source review; they are not proven errors.</p>
+          </div>
+
+          <figure class="nasa-chart">
+            <h3 class="chart-title">BASS-II initial vs final CO₂</h3>
+            <div class="scatter-wrap">
+              <svg class="scatter" id="nasa-scatter" viewBox="0 0 440 400" role="img" aria-label="Scatter plot of initial versus final CO2 percent by volume for matching BASS-II records"></svg>
+              <div class="scatter-tip" id="nasa-tip" hidden></div>
+            </div>
+            <div class="legend">
+              <span class="lg lg-point">NASA record</span>
+              <span class="lg lg-flagged">Has source-review flag</span>
+              <span class="lg lg-ref">y = x (final equals initial)</span>
+            </div>
+            <div class="nasa-plot-counts" id="nasa-plot-counts" aria-live="polite"></div>
+            <div class="nasa-selection" id="nasa-selection" hidden></div>
+            <figcaption class="fineprint">Before/after measurements across experiments with differing materials and test conditions. This chart does not establish a causal airflow relationship.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
     <!-- ================= EVIDENCE (both views) ================= -->
     <section class="card evidence-card" aria-labelledby="evidence-title">
       <div class="card-head"><h2 id="evidence-title">NASA evidence</h2></div>
       <div class="empty-state">
-        <div class="empty-title">NASA reference data not loaded</div>
-        <p>No NASA reference curves, numbers, citations, or findings are included in this prototype yet, so none are plotted or quoted here.</p>
+        <div class="empty-title">NASA experimental records available; paper-based interpretation pending</div>
+        <p>The BASS-II explorer above shows imported NASA experiment records as recorded. Interpretation from NASA papers has not been added yet, so no findings, citations, flame-spread curves, or extinction thresholds are stated or plotted here.</p>
       </div>
       <ul class="caveats">
-        <li>Airflow values in the configuration are provisional estimates, not measurements.</li>
+        <li>This imported table contains no explicit flame-spread measurements.</li>
+        <li>NASA CO and CO₂ measurements are not used to calibrate the MQ-2 sensor, and live readings are not overlaid on NASA data.</li>
+        <li>Airflow values in the configuration are provisional prototype estimates, not NASA measurements.</li>
         <li>Damper angles are servo commands, not independently measured positions.</li>
         <li>Gas readings are raw MQ-2 ADC counts, not calibrated concentrations.</li>
       </ul>
     </section>
   </main>
+
+  <dialog class="nasa-dialog" id="nasa-dialog" aria-labelledby="nasa-dialog-title">
+    <div class="dialog-inner">
+    <div class="dialog-head">
+      <div>
+        <div class="dialog-kicker">BASS-II record</div>
+        <h3 id="nasa-dialog-title" class="mono"></h3>
+      </div>
+      <button type="button" class="btn btn-small" id="nasa-dialog-close">Close</button>
+    </div>
+    <div id="nasa-dialog-flags"></div>
+    <table class="detail-table">
+      <thead><tr><th scope="col">Original NASA field</th><th scope="col">Original text</th><th scope="col">Parsed numeric</th></tr></thead>
+      <tbody id="nasa-dialog-fields"></tbody>
+    </table>
+    <h4>Provenance</h4>
+    <dl class="meta" id="nasa-dialog-provenance"></dl>
+    </div>
+  </dialog>
 
   <script src="/static/app.js" defer></script>
 </body>

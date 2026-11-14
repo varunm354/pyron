@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -22,9 +23,13 @@ from typing import Any, Literal
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
+
+from backend import experiments
+
+logger = logging.getLogger("pyron")
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
 DASHBOARD_DIR = Path(__file__).resolve().parent.parent / "dashboard"
@@ -218,11 +223,38 @@ class PyronState:
             return [copy.deepcopy(record) for _, record in self.history]
 
 
+def load_experiments(path: Path) -> tuple[experiments.Dataset | None, str | None]:
+    # A missing or invalid dataset must not take down the hardware endpoints.
+    try:
+        return experiments.load_dataset(path), None
+    except experiments.DatasetError as exc:
+        logger.warning("NASA dataset unavailable: %s", exc)
+        return None, str(exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("NASA dataset failed to load")
+        return None, f"unexpected error while loading dataset: {exc.__class__.__name__}"
+
+
 def create_app(
     config_path: Path | str | None = None,
     clock: Callable[[], float] = time.monotonic,
+    dataset_path: Path | str | None = None,
 ) -> FastAPI:
     state = PyronState(Path(config_path) if config_path else DEFAULT_CONFIG_PATH, clock)
+    dataset, dataset_error = load_experiments(
+        Path(dataset_path) if dataset_path else experiments.DEFAULT_DATASET_PATH
+    )
+
+    def dataset_unavailable() -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "available": False,
+                "error": f"NASA dataset unavailable: {dataset_error}",
+                "source_url": experiments.SOURCE_URL,
+                "completeness_note": experiments.COMPLETENESS_NOTE,
+            },
+        )
 
     app = FastAPI(title="Pyron backend", redirect_slashes=False)
     app.state.pyron = state
@@ -269,6 +301,23 @@ def create_app(
     @app.get("/telemetry/history")
     def telemetry_history() -> dict[str, Any]:
         return {"items": state.history_items()}
+
+    @app.get("/experiments")
+    def list_experiments() -> Any:
+        if dataset is None:
+            return dataset_unavailable()
+        return {
+            "items": dataset.items,
+            "count": len(dataset.items),
+            "source_url": experiments.SOURCE_URL,
+            "completeness_note": experiments.COMPLETENESS_NOTE,
+        }
+
+    @app.get("/experiments/summary")
+    def experiments_summary() -> Any:
+        if dataset is None:
+            return dataset_unavailable()
+        return dataset.summary
 
     return app
 

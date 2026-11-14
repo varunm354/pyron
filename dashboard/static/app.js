@@ -41,19 +41,21 @@ function formatUptime(ms) {
 
 async function fetchJSON(url, options = {}) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const { timeoutMs = FETCH_TIMEOUT_MS, ...fetchOptions } = options;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const resp = await fetch(url, {
-      ...options,
+      ...fetchOptions,
       cache: "no-store",
       signal: controller.signal,
-      headers: { Accept: "application/json", ...(options.headers || {}) },
+      headers: { Accept: "application/json", ...(fetchOptions.headers || {}) },
     });
     if (!resp.ok) {
       let detail = "";
       try {
         const body = await resp.json();
-        detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+        if (typeof body.error === "string") detail = body.error;
+        else detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
       } catch (_) { /* non-JSON error body */ }
       throw new Error(`HTTP ${resp.status}${detail ? ` — ${detail}` : ""}`);
     }
@@ -566,4 +568,378 @@ function setView(view) {
 $("tab-hardware").addEventListener("click", () => setView("hardware"));
 $("tab-demo").addEventListener("click", () => setView("demo"));
 
+/* ------------------------------------------------------------------ */
+/* NASA BASS-II explorer (static dataset, fetched once per page load)  */
+/* ------------------------------------------------------------------ */
+
+const NASA = {
+  pageSize: 12,
+  x: "numeric__Initial CO2 % by vol",
+  y: "numeric__Final CO2 % by vol",
+  originalColumns: [
+    "PI", "Test #", "Date", "GMT", "Sample #", "Fuel Sample Material", "Flow restrictor",
+    "Fan display", "Air display", "Radiometer gain (1000 250 50 10)", "Total Frames Shot",
+    "Calibrated initial O2 % by vol", "Calibrated final O2 % by vol",
+    "Initial CO2 % by vol", "Final CO2 % by vol", "Initial CO (ppm)", "Final CO (ppm)",
+  ],
+};
+
+const nasa = { items: [], byId: new Map(), filtered: [], groups: new Map(), page: 0, selectedKey: null, domain: null };
+
+const isNum = (v) => typeof v === "number" && Number.isFinite(v);
+
+function describeFlag(flag) {
+  const i = flag.indexOf(":");
+  const kind = i < 0 ? flag : flag.slice(0, i);
+  const column = i < 0 ? "" : flag.slice(i + 1);
+  if (kind === "negative_value") return `Negative value — ${column}`;
+  if (kind === "review_oxygen_above_30_percent") return `O₂ above 30% — ${column}`;
+  if (kind === "review_date_year_2018") return "Date year 2018";
+  return flag;
+}
+
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") node.className = v;
+    else if (k === "text") node.textContent = v;
+    else if (k.startsWith("data-")) node.setAttribute(k, v);
+    else node[k] = v;
+  }
+  for (const c of children) if (c != null) node.append(c);
+  return node;
+}
+
+function safeHttpsUrl(url) {
+  try {
+    const u = new URL(String(url));
+    return u.protocol === "https:" ? u.href : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function flagChips(flags) {
+  if (!flags.length) return el("span", { class: "muted", text: "No flags" });
+  const wrap = el("span", { class: "chips" });
+  for (const f of flags) wrap.append(el("span", { class: "chip chip-review", text: describeFlag(f), title: `Source-review flag: ${f}` }));
+  return wrap;
+}
+
+function niceStep(span) {
+  for (const s of [0.05, 0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10, 20, 50, 100]) if (span / s <= 8) return s;
+  return Math.pow(10, Math.ceil(Math.log10(span / 8)));
+}
+
+function computeDomain(items) {
+  const vals = [];
+  for (const it of items) if (isNum(it[NASA.x]) && isNum(it[NASA.y])) vals.push(it[NASA.x], it[NASA.y]);
+  if (!vals.length) return { lo: 0, hi: 1, step: 0.2 };
+  const rawLo = Math.min(0, ...vals);
+  const rawHi = Math.max(...vals);
+  const span = (rawHi - rawLo) * 1.05 || 1;
+  const step = niceStep(span);
+  return { lo: Math.floor(rawLo / step) * step, hi: Math.ceil((rawLo + span) / step) * step, step };
+}
+
+async function loadNasa() {
+  try {
+    const [data, summary] = await Promise.all([
+      fetchJSON("/experiments", { timeoutMs: 15000 }),
+      fetchJSON("/experiments/summary", { timeoutMs: 15000 }),
+    ]);
+    if (!Array.isArray(data.items)) throw new Error("unexpected /experiments response");
+    nasa.items = data.items;
+    nasa.byId = new Map(data.items.map((it) => [it.record_id, it]));
+    nasa.domain = computeDomain(data.items);
+
+    setText($("nasa-count"), String(summary.record_count));
+    setText($("nasa-pis"), String(summary.distinct_pi_count));
+    setText($("nasa-flagged"), String(summary.review_flagged_count));
+    setText($("nasa-completeness"), String(data.completeness_note));
+    const href = safeHttpsUrl(data.source_url);
+    if (href) $("nasa-source").href = href;
+    else $("nasa-source").removeAttribute("href");
+
+    const select = $("nasa-pi");
+    const pis = [...new Set(data.items.map((it) => it.PI))].sort((a, b) => a.localeCompare(b));
+    for (const pi of pis) select.append(el("option", { value: pi, text: pi }));
+
+    $("nasa-loading").hidden = true;
+    $("nasa-body").hidden = false;
+    applyNasaFilters();
+  } catch (err) {
+    $("nasa-loading").hidden = true;
+    $("nasa-unavailable").hidden = false;
+    setText($("nasa-unavailable-text"),
+      `${err.message}. The NASA explorer cannot be shown; the hardware dashboard and demo preview are unaffected.`);
+  }
+}
+
+function applyNasaFilters() {
+  const q = $("nasa-search").value.trim().toLowerCase();
+  const pi = $("nasa-pi").value;
+  nasa.filtered = nasa.items.filter((it) => {
+    if (pi && it.PI !== pi) return false;
+    if (!q) return true;
+    return [it.PI, it["Test #"], it["Fuel Sample Material"]].some((v) => String(v).toLowerCase().includes(q));
+  });
+  nasa.page = 0;
+
+  nasa.groups = new Map();
+  for (const it of nasa.filtered) {
+    if (!isNum(it[NASA.x]) || !isNum(it[NASA.y])) continue;
+    const key = `${it[NASA.x]}|${it[NASA.y]}`;
+    if (!nasa.groups.has(key)) nasa.groups.set(key, { key, x: it[NASA.x], y: it[NASA.y], items: [] });
+    nasa.groups.get(key).items.push(it);
+  }
+  if (!nasa.groups.has(nasa.selectedKey)) nasa.selectedKey = null;
+
+  const total = nasa.items.length;
+  setText($("nasa-match-count"), nasa.filtered.length === total
+    ? `${total} of ${total} records`
+    : `${nasa.filtered.length} of ${total} records match`);
+
+  renderNasaTable();
+  renderScatter();
+  renderSelection();
+}
+
+function renderNasaTable() {
+  const tbody = $("nasa-tbody");
+  const rows = [];
+  const pages = Math.max(1, Math.ceil(nasa.filtered.length / NASA.pageSize));
+  nasa.page = Math.min(nasa.page, pages - 1);
+  const start = nasa.page * NASA.pageSize;
+  const slice = nasa.filtered.slice(start, start + NASA.pageSize);
+
+  if (!slice.length) {
+    rows.push(el("tr", { class: "empty-row" }, el("td", { colSpan: 6, text: "No records match the current search or PI filter." })));
+  }
+  for (const it of slice) {
+    const tr = el("tr", { class: "nasa-row", tabIndex: 0, "data-id": it.record_id, title: `Show details for ${it.record_id}` },
+      el("td", { text: it.PI }),
+      el("td", { class: "mono", text: it["Test #"] }),
+      el("td", { text: it["Fuel Sample Material"] }),
+      el("td", { class: "num mono", text: it["Initial CO2 % by vol"] || "—" }),
+      el("td", { class: "num mono", text: it["Final CO2 % by vol"] || "—" }),
+      el("td", {}, flagChips(it.review_flags || [])),
+    );
+    if (it.review_flags && it.review_flags.length) tr.classList.add("is-flagged");
+    rows.push(tr);
+  }
+  tbody.replaceChildren(...rows);
+
+  const end = Math.min(start + NASA.pageSize, nasa.filtered.length);
+  setText($("nasa-page"), nasa.filtered.length
+    ? `Page ${nasa.page + 1} of ${pages} · ${start + 1}–${end} of ${nasa.filtered.length}`
+    : "No matching records");
+  $("nasa-prev").disabled = nasa.page === 0;
+  $("nasa-next").disabled = nasa.page >= pages - 1;
+}
+
+const SC = { w: 440, h: 400, left: 62, top: 14, size: 326 };
+
+function renderScatter() {
+  const svg = $("nasa-scatter");
+  const { lo, hi, step } = nasa.domain || { lo: 0, hi: 1, step: 0.2 };
+  const { left, top, size } = SC;
+  const sx = (v) => left + ((v - lo) / (hi - lo)) * size;
+  const sy = (v) => top + size - ((v - lo) / (hi - lo)) * size;
+  const frag = document.createDocumentFragment();
+
+  for (let v = lo, i = 0; v <= hi + step / 2 && i < 50; v += step, i++) {
+    const label = String(Math.round(v * 100) / 100);
+    frag.append(svgEl("line", { class: "grid-line", x1: sx(v), x2: sx(v), y1: top, y2: top + size }));
+    frag.append(svgEl("line", { class: "grid-line", x1: left, x2: left + size, y1: sy(v), y2: sy(v) }));
+    frag.append(svgEl("text", { class: "axis-label", x: sx(v), y: top + size + 16, "text-anchor": "middle" }, label));
+    frag.append(svgEl("text", { class: "axis-label", x: left - 8, y: sy(v) + 4, "text-anchor": "end" }, label));
+  }
+  frag.append(svgEl("rect", { class: "plot-frame", x: left, y: top, width: size, height: size }));
+  frag.append(svgEl("text", { class: "axis-title", x: left + size / 2, y: top + size + 40, "text-anchor": "middle" }, "Initial CO2 (% by volume)"));
+  frag.append(svgEl("text", {
+    class: "axis-title", x: 0, y: 0, "text-anchor": "middle",
+    transform: `translate(${left - 44} ${top + size / 2}) rotate(-90)`,
+  }, "Final CO2 (% by volume)"));
+
+  frag.append(svgEl("line", { class: "ref-line", x1: sx(lo), y1: sy(lo), x2: sx(hi), y2: sy(hi) }));
+  frag.append(svgEl("text", { class: "ref-label", x: sx(hi) - 4, y: sy(hi) + 34, "text-anchor": "end" }, "y = x"));
+
+  const groups = [...nasa.groups.values()].sort((a, b) => a.x - b.x || a.y - b.y);
+  // One Tab stop for the chart; arrow keys move between points in x order.
+  const focusKey = nasa.groups.has(nasa.selectedKey) ? nasa.selectedKey : groups.length ? groups[0].key : null;
+  for (const g of groups) {
+    const n = g.items.length;
+    const flagged = g.items.some((it) => it.review_flags && it.review_flags.length);
+    const ids = g.items.map((it) => it.record_id).join(", ");
+    const c = svgEl("circle", {
+      class: `pt${flagged ? " pt-flagged" : ""}${g.key === nasa.selectedKey ? " pt-selected" : ""}`,
+      cx: sx(g.x), cy: sy(g.y), r: n > 1 ? 6.5 : 4.5,
+      tabindex: g.key === focusKey ? 0 : -1, role: "button", "data-key": g.key,
+      "aria-label": `${ids}: initial ${g.x}%, final ${g.y}%${n > 1 ? ` (${n} records)` : ""}`,
+    });
+    frag.append(c);
+    if (n > 1) frag.append(svgEl("text", { class: "pt-count", x: sx(g.x) + 9, y: sy(g.y) - 7 }, `×${n}`));
+  }
+
+  if (!nasa.filtered.length) {
+    frag.append(svgEl("text", { class: "empty-label", x: left + size / 2, y: top + size / 2, "text-anchor": "middle" }, "No records match the current filter"));
+  } else if (!groups.length) {
+    frag.append(svgEl("text", { class: "empty-label", x: left + size / 2, y: top + size / 2, "text-anchor": "middle" }, "No plottable records in this selection"));
+  }
+  svg.replaceChildren(frag);
+  hideTip();
+
+  const plotted = groups.reduce((sum, g) => sum + g.items.length, 0);
+  const excluded = nasa.filtered.length - plotted;
+  const shared = groups.filter((g) => g.items.length > 1).reduce((sum, g) => sum + g.items.length, 0);
+  let text = nasa.filtered.length
+    ? `Plotted ${plotted} of ${nasa.filtered.length} matching records · ${excluded} excluded (initial or final CO₂ missing or nonnumeric)`
+    : "0 matching records — nothing to plot";
+  if (shared) text += ` · ${shared} records share identical values (larger points, labeled ×n)`;
+  setText($("nasa-plot-counts"), text);
+}
+
+function recordLines(it) {
+  return [
+    el("div", { class: "tip-id mono", text: it.record_id }),
+    el("div", { text: `PI: ${it.PI} · Test #: ${it["Test #"]}` }),
+    el("div", { class: "muted", text: it["Fuel Sample Material"] }),
+    el("div", { class: "mono", text: `Initial CO₂ ${it[NASA.x]}% → Final CO₂ ${it[NASA.y]}% (by vol)` }),
+    (it.review_flags || []).length ? el("div", { class: "tip-flag", text: `Source-review flag: ${it.review_flags.map(describeFlag).join("; ")}` }) : null,
+  ];
+}
+
+function showTip(circle) {
+  const g = nasa.groups.get(circle.dataset.key);
+  if (!g) return;
+  const tip = $("nasa-tip");
+  const blocks = g.items.slice(0, 4).map((it) => el("div", { class: "tip-record" }, ...recordLines(it)));
+  if (g.items.length > 4) blocks.push(el("div", { class: "muted", text: `+${g.items.length - 4} more — click to list all` }));
+  tip.replaceChildren(...blocks);
+  tip.hidden = false;
+  const wrap = circle.closest(".scatter-wrap").getBoundingClientRect();
+  const r = circle.getBoundingClientRect();
+  const x = r.left - wrap.left + r.width / 2;
+  const y = r.top - wrap.top;
+  const tipW = tip.offsetWidth;
+  tip.style.left = `${Math.min(Math.max(x - tipW / 2, 4), wrap.width - tipW - 4)}px`;
+  tip.style.top = `${y - tip.offsetHeight - 10 < 0 ? y + r.height + 10 : y - tip.offsetHeight - 10}px`;
+}
+
+function hideTip() {
+  $("nasa-tip").hidden = true;
+}
+
+function selectPoint(key) {
+  nasa.selectedKey = nasa.selectedKey === key ? null : key;
+  document.querySelectorAll("#nasa-scatter .pt").forEach((c) => c.classList.toggle("pt-selected", c.dataset.key === nasa.selectedKey));
+  renderSelection();
+}
+
+function renderSelection() {
+  const panel = $("nasa-selection");
+  const g = nasa.selectedKey && nasa.groups.get(nasa.selectedKey);
+  if (!g) {
+    panel.hidden = true;
+    panel.replaceChildren();
+    return;
+  }
+  const head = el("div", { class: "selection-head" },
+    el("strong", { text: `Selected point · ${g.items.length} record${g.items.length > 1 ? "s" : ""}` }),
+    el("button", { type: "button", class: "btn btn-small", text: "Clear", onclick: () => selectPoint(g.key) }),
+  );
+  const list = g.items.map((it) => el("div", { class: "selection-record" },
+    el("div", {}, ...recordLines(it)),
+    el("button", { type: "button", class: "btn btn-small", text: "View details", onclick: () => openNasaDetail(it.record_id) }),
+  ));
+  panel.replaceChildren(head, ...list);
+  panel.hidden = false;
+}
+
+function openNasaDetail(id) {
+  const it = nasa.byId.get(id);
+  if (!it) return;
+  setText($("nasa-dialog-title"), it.record_id);
+
+  const flags = it.review_flags || [];
+  const flagBox = $("nasa-dialog-flags");
+  flagBox.className = flags.length ? "dialog-flags has-flags" : "dialog-flags";
+  flagBox.replaceChildren(
+    el("strong", { text: flags.length ? "Source-review flags" : "No source-review flags" }),
+    flags.length ? el("ul", {}, ...flags.map((f) => el("li", {}, el("span", { class: "mono", text: f }), ` — ${describeFlag(f)}`))) : null,
+    flags.length ? el("div", { class: "muted", text: "Flags mark values to check against the source. They are not proven errors, and flagged records stay in the table and chart." }) : null,
+  );
+
+  const rows = NASA.originalColumns.map((col) => {
+    const numKey = `numeric__${col}`;
+    let parsed;
+    if (!(numKey in it)) parsed = el("span", { class: "muted", text: "text field (not parsed)" });
+    else if (it[numKey] === null) parsed = el("span", { class: "muted", text: "null (blank or nonnumeric)" });
+    else parsed = el("span", { class: "mono", text: String(it[numKey]) });
+    const original = it[col] === "" ? el("span", { class: "muted", text: "(blank)" }) : el("span", { text: String(it[col]) });
+    return el("tr", {}, el("th", { scope: "row", text: col }), el("td", {}, original), el("td", {}, parsed));
+  });
+  $("nasa-dialog-fields").replaceChildren(...rows);
+
+  const href = safeHttpsUrl(it.source_url);
+  const urlNode = href ? el("a", { href, target: "_blank", rel: "noopener noreferrer", text: it.source_url }) : el("span", { text: String(it.source_url) });
+  const prov = [
+    ["record_id", el("span", { class: "mono", text: it.record_id })],
+    ["source_file", el("span", { text: it.source_file })],
+    ["source_row", el("span", { class: "mono", text: it.source_row })],
+    ["source_url", urlNode],
+    ["quality_flags", el("span", { class: "mono", text: it.quality_flags || "(none)" })],
+    ["dataset_note", el("span", { text: it.dataset_note })],
+  ].map(([k, v]) => el("div", {}, el("dt", { text: k }), el("dd", {}, v)));
+  $("nasa-dialog-provenance").replaceChildren(...prov);
+
+  hideTip();
+  $("nasa-dialog").showModal();
+}
+
+$("nasa-search").addEventListener("input", applyNasaFilters);
+$("nasa-pi").addEventListener("change", applyNasaFilters);
+$("nasa-prev").addEventListener("click", () => { nasa.page--; renderNasaTable(); });
+$("nasa-next").addEventListener("click", () => { nasa.page++; renderNasaTable(); });
+
+$("nasa-tbody").addEventListener("click", (e) => {
+  const row = e.target.closest("tr.nasa-row");
+  if (row) openNasaDetail(row.dataset.id);
+});
+$("nasa-tbody").addEventListener("keydown", (e) => {
+  const row = e.target.closest("tr.nasa-row");
+  if (row && (e.key === "Enter" || e.key === " ")) {
+    e.preventDefault();
+    openNasaDetail(row.dataset.id);
+  }
+});
+
+const scatter = $("nasa-scatter");
+scatter.addEventListener("pointerover", (e) => { if (e.target.classList.contains("pt")) showTip(e.target); });
+scatter.addEventListener("pointerout", (e) => { if (e.target.classList.contains("pt")) hideTip(); });
+scatter.addEventListener("focusin", (e) => { if (e.target.classList.contains("pt")) showTip(e.target); });
+scatter.addEventListener("focusout", hideTip);
+scatter.addEventListener("click", (e) => { if (e.target.classList.contains("pt")) selectPoint(e.target.dataset.key); });
+scatter.addEventListener("keydown", (e) => {
+  if (!e.target.classList.contains("pt")) return;
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    selectPoint(e.target.dataset.key);
+    return;
+  }
+  const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+  if (!step) return;
+  e.preventDefault();
+  const pts = [...scatter.querySelectorAll(".pt")];
+  const next = pts[Math.min(Math.max(pts.indexOf(e.target) + step, 0), pts.length - 1)];
+  e.target.setAttribute("tabindex", "-1");
+  next.setAttribute("tabindex", "0");
+  next.focus();
+});
+
+$("nasa-dialog-close").addEventListener("click", () => $("nasa-dialog").close());
+$("nasa-dialog").addEventListener("click", (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+
 setView(location.hash === "#demo" ? "demo" : "hardware");
+loadNasa();
