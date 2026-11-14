@@ -180,9 +180,11 @@ Distinctive terms not covered by the top results get their best chunk added, so
 comparisons such as Saffire vs. BASS-II show both experiments. Displayed excerpts are
 at most about 300 characters around the best-matching sentence.
 
-Keyword search matches words, not meaning. For example, "Can flames persist at very
-low airflow?" finds airflow passages but misses the quenching-extinction pages, which
-say "flow" and "quenching". Asking "quenching extinction at very low flow" finds them.
+Tokenization splits hyphens and known compounds (`airflow` → `air` + `flow`) in both
+the index and the question. Soft query-side expansions bridge ordinary wording to NASA
+terminology (`persist`/`survive`, `quench`/`extinction`, and extra low-flow + flame
+terms) without hardcoding answers. Expansion weights stay below the user's own words,
+and out-of-vocabulary question terms still enforce the off-topic coverage floor.
 
 **Without API credentials** (the default), `/ask` returns `mode: "retrieval"`,
 `answer: null`, and the ranked excerpts. The dashboard labels this "EVIDENCE SEARCH ·

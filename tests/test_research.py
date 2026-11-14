@@ -13,8 +13,10 @@ from backend.research import (
     OpenAIGenerator,
     ProviderError,
     ResearchAssistant,
+    expand_query_terms,
     load_corpus,
     load_llm_settings,
+    tokenize,
     validate_generation,
 )
 
@@ -42,8 +44,11 @@ NO_LLM = LLMSettings()
 FAKE_LLM = LLMSettings(api_key="sk-test-secret-value", model="test-model")
 SUGGESTED = (
     "What did BASS-II measure?",
+    "How does airflow affect flames?",
     "How does airflow affect flames in these experiments?",
     "Can flames persist at very low airflow?",
+    "Can flames burn at very low flow?",
+    "Do flames survive at low air flow?",
     "How does Saffire differ from BASS-II?",
 )
 UNRELATED = (
@@ -202,9 +207,38 @@ def test_suggested_questions_return_bounded_relevant_evidence(assistant, questio
     assert [h["score"] for h in hits] == sorted((h["score"] for h in hits), reverse=True)
 
 
+def test_tokenize_splits_airflow_and_hyphens():
+    tokens = tokenize("low-speed airflow BASS–II")
+    assert "airflow" in tokens and "air" in tokens and "flow" in tokens
+    assert "low" in tokens and "spe" in tokens  # "speed" stems by dropping the trailing e
+    assert "bass" in tokens and "ii" in tokens
+
+
+def test_query_expansion_bridges_persist_and_low_airflow():
+    weights = expand_query_terms("Can flames persist at very low airflow?")
+    assert weights["airflow"] == 1 and weights["flow"] >= 1 and weights["flam"] == 1
+    assert weights["surviv"] > 0 and weights["quench"] > 0 and weights["extinct"] > 0
+    # Soft expansions must not outweigh the words the user typed.
+    assert weights["quench"] < weights["persist"]
+
+
 def test_airflow_question_finds_airflow_passages(assistant):
     hits, _ = assistant.retrieve("How does airflow affect flames in these experiments?")
     assert sum("airflow" in h["chunk"]["text"].lower() for h in hits) >= 3
+
+
+def test_low_airflow_persist_finds_survive_or_quench_evidence(assistant):
+    hits, _ = assistant.retrieve("Can flames persist at very low airflow?")
+    assert hits
+    joined = " ".join(h["chunk"]["text"].lower() for h in hits)
+    assert "airflow" in joined or "flow" in joined
+    assert "surviv" in joined or "quench" in joined or "extinction" in joined
+    assert any(
+        "survived at airflow" in h["chunk"]["text"].lower()
+        or "less than 1 cm/s" in h["chunk"]["text"].lower()
+        or "quench" in h["chunk"]["text"].lower()
+        for h in hits
+    )
 
 
 def test_saffire_comparison_includes_both_experiments(assistant):

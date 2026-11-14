@@ -63,6 +63,28 @@ STOPWORDS = frozenset(
     affect affects relate relates""".split()
 )
 
+# Index and query both expand these so "airflow" matches passages that only say "flow".
+COMPOUND_PARTS: dict[str, tuple[str, ...]] = {
+    "airflow": ("air", "flow"),
+    "airflows": ("air", "flow"),
+    "flamespread": ("flame", "spread"),
+    "microgravity": ("gravity",),
+    "lowspeed": ("low", "speed"),
+}
+
+# Stemmed synonym groups used only on the query side (soft weight). Groups are small and
+# topical; they do not invent findings, only bridge ordinary wording to NASA terminology.
+SYNONYM_GROUPS: tuple[frozenset[str], ...] = (
+    frozenset({"persist", "surviv", "remain", "continu"}),
+    frozenset({"quench", "extinct", "extinguish"}),
+)
+EXPANSION_WEIGHT = 0.45
+# Ordinary-language "low airflow/flow + flame" questions often mean quenching/extinction.
+LOW_FLOW_FLAME = frozenset({"low", "flam"})
+LOW_FLOW_AIR = frozenset({"airflow", "flow", "air"})
+LOW_FLOW_EXTRA = ("quench", "extinct", "extinguish", "surviv")
+LOW_FLOW_EXTRA_WEIGHT = 0.7
+
 _TOKEN = re.compile(r"[a-z0-9]+")
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
@@ -95,8 +117,41 @@ def stem(token: str) -> str:
     return token
 
 
+def _raw_tokens(text: str) -> list[str]:
+    # Hyphens and en/em dashes are splits so "low-speed" and "BASS–II" yield separate words.
+    return _TOKEN.findall(re.sub(r"[-–—/]", " ", text.lower()))
+
+
 def tokenize(text: str) -> list[str]:
-    return [stem(t) for t in _TOKEN.findall(text.lower()) if t not in STOPWORDS and (len(t) > 1 or t.isdigit())]
+    """Stemmed tokens plus parts of known compounds (airflow → air, flow)."""
+    tokens: list[str] = []
+    for raw in _raw_tokens(text):
+        if raw in STOPWORDS or (len(raw) <= 1 and not raw.isdigit()):
+            continue
+        tokens.append(stem(raw))
+        for part in COMPOUND_PARTS.get(raw, ()):
+            if part not in STOPWORDS:
+                tokens.append(stem(part))
+    return tokens
+
+
+def expand_query_terms(text: str) -> Counter[str]:
+    """Literal question terms at full weight, plus soft synonym / low-flow expansions.
+
+    Expansion never replaces the question; it only adds alternate NASA-document wording
+    so that e.g. "persist at very low airflow" can reach "quenching" and "flow" passages.
+    """
+    literal = tokenize(text)
+    weights: Counter[str] = Counter(literal)
+    present = set(literal)
+    for group in SYNONYM_GROUPS:
+        if present & group:
+            for term in group - present:
+                weights[term] += EXPANSION_WEIGHT
+    if LOW_FLOW_FLAME <= present and present & LOW_FLOW_AIR:
+        for term in LOW_FLOW_EXTRA:
+            weights[term] += LOW_FLOW_EXTRA_WEIGHT
+    return weights
 
 
 def make_excerpt(text: str, query_terms: set[str], max_chars: int = EXCERPT_CHARS) -> str:
@@ -181,12 +236,19 @@ class TfidfIndex:
         """IDF, with terms absent from the corpus weighted as the rarest possible term."""
         return self.idf.get(term, math.log(1 + len(self.chunks)) + 1.0)
 
-    def search(self, query: str) -> tuple[list[tuple[float, int, set[str]]], set[str]]:
-        counts = Counter(t for t in tokenize(query) if t in self.idf)
-        terms = set(counts)
-        if not counts:
-            return [], terms
-        qvec = {t: (1 + math.log(c)) * self.idf[t] for t, c in counts.items()}
+    def search(self, query: str) -> tuple[list[tuple[float, int, set[str]]], set[str], set[str]]:
+        """Score chunks against an expanded query.
+
+        Returns (ranked hits, all query terms used for excerpts, literal terms for
+        coverage). Coverage keeps out-of-vocabulary words so off-topic questions still
+        fail the floor. Soft synonym expansions do not count as literal coverage.
+        """
+        weights = Counter({t: w for t, w in expand_query_terms(query).items() if t in self.idf})
+        terms = set(weights)
+        literal = set(tokenize(query))
+        if not weights:
+            return [], terms, literal
+        qvec = {t: (1 + math.log(w)) * self.idf[t] for t, w in weights.items()}
         qnorm = math.sqrt(sum(v * v for v in qvec.values()))
         scored = []
         for i, vec in enumerate(self.vectors):
@@ -194,7 +256,7 @@ class TfidfIndex:
             if matched:
                 scored.append((sum(qvec[t] * vec[t] for t in matched) / qnorm, i, matched))
         scored.sort(key=lambda s: (-s[0], s[1]))
-        return scored, terms
+        return scored, terms, literal
 
 
 # --- LLM configuration ---------------------------------------------------------
@@ -399,24 +461,35 @@ class ResearchAssistant:
     def retrieve(self, question: str) -> tuple[list[dict[str, Any]], set[str]]:
         """Top chunks above the relevance floor, or [] when the question is off-topic.
 
-        A chunk must match at least two query terms (or only the question's rarest term)
-        and cover MIN_COVERAGE of the question's IDF weight, counting words that never
-        appear in the corpus. Afterwards, distinctive query terms not yet covered get
-        their best chunk, so comparisons like "Saffire vs BASS-II" show both sides.
+        Coverage uses the question's literal terms (after compound splitting). A synonym
+        match counts as covering its group mate in the question, so "persist" is covered
+        by a "survive" passage. Soft expansion terms alone cannot satisfy the floor.
+        Distinctive uncovered literal terms then backfill, so comparisons like
+        Saffire vs BASS-II still show both sides.
         """
-        scored, terms = self.index.search(question)
-        query_terms = set(tokenize(question))
-        total_weight = sum(self.index.term_weight(t) for t in query_terms)
-        min_terms = min(MIN_MATCHED_TERMS, len(query_terms))
-        rarest = max(query_terms, key=lambda t: (self.index.term_weight(t), t), default=None)
+        scored, terms, literal = self.index.search(question)
+        if not literal:
+            return [], terms
+
+        def covers(matched: set[str]) -> set[str]:
+            covered = matched & literal
+            for group in SYNONYM_GROUPS:
+                if matched & group:
+                    covered |= literal & group
+            return covered
+
+        total_weight = sum(self.index.term_weight(t) for t in literal)
+        min_terms = min(MIN_MATCHED_TERMS, len(literal))
+        rarest = max(literal, key=lambda t: (self.index.term_weight(t), t))
 
         def eligible(score: float, matched: set[str], strict: bool) -> bool:
             if score < MIN_SCORE:
                 return False
             if not strict:
                 return True
-            coverage = sum(self.index.term_weight(t) for t in matched) / total_weight
-            return (len(matched) >= min_terms or matched == {rarest}) and coverage >= MIN_COVERAGE
+            covered = covers(matched)
+            coverage = sum(self.index.term_weight(t) for t in covered) / total_weight
+            return (len(covered) >= min_terms or covered == {rarest}) and coverage >= MIN_COVERAGE
 
         primary = [s for s in scored if eligible(s[0], s[2], strict=True)]
         if not primary:
@@ -438,9 +511,9 @@ class ResearchAssistant:
             if len(chosen) >= MAX_RESULTS - MAX_BACKFILL:
                 break
             take(entry)
-        covered = set().union(*(e[2] for e in chosen))
+        covered_terms = set().union(*(covers(e[2]) for e in chosen)) if chosen else set()
         distinctive = sorted(
-            (t for t in terms - covered if self.index.idf[t] >= BACKFILL_MIN_IDF),
+            (t for t in literal - covered_terms if self.index.idf.get(t, 0) >= BACKFILL_MIN_IDF),
             key=lambda t: -self.index.idf[t],
         )
         for term in distinctive[:MAX_BACKFILL]:
@@ -547,7 +620,11 @@ class ResearchAssistant:
 def sources_status(
     corpus: Corpus | None, error: str | None, assistant: ResearchAssistant | None, settings: LLMSettings
 ) -> dict[str, Any]:
-    retrieval = {"method": "TF-IDF cosine similarity", "min_score": MIN_SCORE, "max_results": MAX_RESULTS}
+    retrieval = {
+        "method": "TF-IDF cosine similarity with compound splitting and soft query expansion",
+        "min_score": MIN_SCORE,
+        "max_results": MAX_RESULTS,
+    }
     llm = assistant.llm_status() if assistant else {"configured": settings.configured, "model": settings.model if settings.configured else None}
     if corpus is None:
         return {
