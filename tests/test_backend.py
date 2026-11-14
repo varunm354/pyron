@@ -107,8 +107,19 @@ def test_initial_config_is_exact_and_small(client):
     assert len(resp.content) < 2048
 
 
-def test_repo_config_file_matches_initial_config():
-    assert load_config(DEFAULT_CONFIG_PATH) == INITIAL_CONFIG
+def test_repo_config_file_is_valid_without_pinning_live_values():
+    # The live file changes through dashboard controls (version, mode, simulate), so it is
+    # checked for validity and invariants only. Exact defaults use temporary fixtures.
+    config = load_config(DEFAULT_CONFIG_PATH)  # raises ConfigError on any schema violation
+    assert set(config) == set(INITIAL_CONFIG)
+    assert isinstance(config["version"], int) and config["version"] >= INITIAL_CONFIG["version"]
+    assert 0 <= config["clear_adc"] < config["warn_adc"] < config["alarm_adc"] <= 4095
+    assert config["mode"] in ("nasa", "earth")
+    assert config["response"] == {"nasa": NASA_RESPONSE, "earth": EARTH_RESPONSE}[config["mode"]]
+    assert isinstance(config["simulate"], bool)
+    assert set(config["damper_deg"]) == set(config["airflow_cm_s"]) == {"open", "half", "closed"}
+    assert config["damper_deg"] == INITIAL_CONFIG["damper_deg"]  # servo angles await calibration
+    assert len(json.dumps(config, separators=(",", ":"))) <= 2048
 
 
 def test_cors_allows_only_local_dashboard_origins(client):

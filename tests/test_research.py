@@ -466,6 +466,15 @@ def test_openai_request_uses_strict_schema_and_only_excerpts():
     assert "mq2_raw" not in json.dumps(body) and "telemetry" not in json.dumps(body)
 
 
+def test_system_prompt_requires_direct_qualified_and_labeled_synthesis_answers():
+    prompt = research.SYSTEM_PROMPT
+    assert "must directly answer the question" in prompt
+    assert "hypothesis" in prompt and "afterwards" in prompt
+    assert "airflow" in prompt and "oxygen" in prompt
+    assert "Synthesis from separate sources:" in prompt
+    assert "Every factual statement" in prompt and "untrusted" in prompt
+
+
 @pytest.mark.parametrize(
     ("handler", "message"),
     [

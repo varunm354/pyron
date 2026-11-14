@@ -211,7 +211,8 @@ for this application. No model is chosen by default. When both are set:
   chunk that was not retrieved for this question. It then falls back to evidence
   search with `status: "invalid_citations"`.
 - Requests run in FastAPI's worker threads (not the event loop), with a 45 s timeout
-  and a 900-token output cap. On timeout, HTTP error, refusal, truncation, or invalid
+  and a 2500-token output cap (reasoning models spend hidden reasoning tokens from it;
+requests use `reasoning_effort: "low"`). On timeout, HTTP error, refusal, truncation, or invalid
   JSON, `/ask` returns the evidence with `status: "provider_error"`. Model output is
   display-only and cannot change configuration or hardware.
 - A valid citation ID shows that the cited chunk exists and was retrieved, not that it
