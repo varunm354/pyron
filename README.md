@@ -91,6 +91,30 @@ connected to the Mac over USB for the whole demo — if it is unplugged, the
 bridge has no transport to read telemetry from or write config to until it is
 reconnected (`--port` must still resolve to a real device).
 
+**Firmware (device side).** `firmware/main_usb.py` is the USB-only sibling of
+`firmware/mainmg.py` (the Wi-Fi firmware, left unchanged): same pins, same
+ok/warn/alarm state machine, same alarm latch, same defaults, but it talks
+NDJSON over USB serial instead of Wi-Fi/HTTP. It accepts
+`{"type":"config","config":{...}}` lines, applying only complete/well-shaped
+ones and otherwise keeping the last known-good config; it emits
+`{"type":"telemetry",...}` once a second as the *only* thing it writes to
+stdout, because the bridge parses every line it reads from the board as JSON.
+It is covered on the host side by `tests/test_main_usb_firmware.py` (static
+source/contract checks — see that file's docstring for exactly what is and
+isn't exercised without real hardware).
+
+Do **not** upload or run it yet. Only once the board is physically back, a
+USB-only bench test (no Wi-Fi, `main_usb.py` driving the real GPIO pins) has
+passed, and Ronny has confirmed the GPIO wiring matches the pins above, flash
+it with:
+
+```sh
+.venv/bin/mpremote connect /dev/cu.usbmodemXXXX cp firmware/main_usb.py :main.py
+```
+
+(replace `/dev/cu.usbmodemXXXX` with the board's actual serial device, e.g.
+from `ls /dev/cu.*` while it's plugged in).
+
 ### Dashboard
 
 With the server running, open [http://localhost:8000/](http://localhost:8000/) on the
