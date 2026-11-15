@@ -33,6 +33,64 @@ same phone hotspot. Point the firmware at `http://<your-mac-ip>:8000`; find the 
 with `ipconfig getifaddr en0`. macOS may ask you to allow incoming connections for
 Python the first time.
 
+### USB serial bridge (Mac-side, Wi-Fi fallback)
+
+While ESP32 firmware is migrated off Wi-Fi, the ESP32 stays USB-connected to
+the Mac and speaks newline-delimited JSON (NDJSON) over serial instead of
+making HTTP calls itself. `tools/usb_bridge.py` is a small Mac-side process
+that sits between the two and does the HTTP talking on the device's behalf.
+It does not change `/config` or `/telemetry`, does not reclassify telemetry,
+and never fabricates a reading.
+
+```
+┌──────────┐   USB serial (NDJSON, 115200 baud)   ┌──────────────────┐   HTTP   ┌──────────────────┐
+│  ESP32   │ ───────────────────────────────────► │  tools/usb_bridge │ ───────► │  FastAPI backend  │
+│ (plugged │ {"type":"telemetry", ...}             │       .py          │ POST    │  /telemetry       │
+│  into    │ ◄─────────────────────────────────── │  (this Mac)        │ ◄─────── │  GET /config       │
+│  the Mac)│ {"type":"config","config":{...}}      │                     │ GET     │                    │
+└──────────┘                                        └──────────────────┘          └──────────────────┘
+```
+
+**Setup** (adds `pyserial` to the existing backend requirements):
+
+```sh
+.venv/bin/python -m pip install -r backend/requirements.txt
+```
+
+**Run** (with the backend already running separately, and the ESP32 plugged
+into USB):
+
+```sh
+.venv/bin/python -m tools.usb_bridge --port /dev/cu.usbmodem1101 --baud 115200 --backend http://127.0.0.1:8000
+```
+
+Find the ESP32's serial device name with `ls /dev/cu.*` while it is plugged
+in. Stop the bridge with Ctrl+C at any time; it closes the serial port and
+exits.
+
+**Serial protocol** (one JSON object per line in each direction):
+
+- ESP32 → Mac (telemetry): `{"type":"telemetry","device":"...","uptime_ms":...,"mq2_raw":...,"state":"...","damper":"...","damper_deg":...,"config_version":...}`
+- Mac → ESP32 (config): `{"type":"config","config":{...exact response from GET /config...}}`
+
+**Behavior:**
+
+- At startup, and every 2 seconds after that, the bridge fetches `GET /config`
+  and writes it to the ESP32 as a `{"type":"config",...}` line, unchanged.
+- It reads serial continuously. Each well-formed `{"type":"telemetry",...}`
+  line is forwarded as-is to `POST /telemetry`, and the HTTP status is logged.
+- Blank lines, malformed JSON, unknown message types, and telemetry missing
+  required fields are logged and dropped, not forwarded, and never crash the
+  bridge. A backend or serial error is logged and retried; it does not stop
+  the bridge or invent data to fill the gap.
+- The bridge never calls an LLM, never mutates the config it forwards, and
+  never fabricates a telemetry reading.
+
+**Limitation:** this is a USB fallback. The ESP32 must remain physically
+connected to the Mac over USB for the whole demo — if it is unplugged, the
+bridge has no transport to read telemetry from or write config to until it is
+reconnected (`--port` must still resolve to a real device).
+
 ### Dashboard
 
 With the server running, open [http://localhost:8000/](http://localhost:8000/) on the
@@ -236,6 +294,11 @@ Tests use temporary config files and never modify `backend/config.json`. Researc
 tests use the committed corpus, fake generators, and mock HTTP transports; they make
 no network calls. The test that checks chunk text against its PDF page is skipped if
 the PDFs are not in `data/papers/`.
+
+`tools/usb_bridge.py` is covered by `tests/test_usb_bridge.py`, using a fake
+in-memory serial port and a mocked HTTP transport (`httpx.MockTransport`). These
+tests never open a real serial port, never require the ESP32 to be attached, and
+never call the live backend.
 
 ### Endpoints
 
