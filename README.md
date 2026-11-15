@@ -360,7 +360,13 @@ Notes:
 ### Editing calibration values
 
 The thresholds, damper angles, and airflow values in `backend/config.json` are
-provisional. To change them:
+provisional. The current `warn_adc` (80), `alarm_adc` (120), and `clear_adc` (70)
+values are Ronny's project bench measurements for this specific MQ-2 sensor and
+its voltage divider, taken on the actual hardware — they are not NASA-derived
+(the BASS-II/Saffire data does not supply MQ-2 thresholds for any sensor) and
+are not calibrated against any NASA CO measurement. `damper_deg` and
+`airflow_cm_s` remain placeholders awaiting their own bench measurements. To
+change any of these:
 
 1. Stop the server.
 2. Edit `backend/config.json` (`clear_adc`, `warn_adc`, `alarm_adc`, `damper_deg`,

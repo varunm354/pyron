@@ -49,9 +49,9 @@ config = {
     "version": 0,
     "mode": "nasa",
     "simulate": False,
-    "warn_adc": 1200,
-    "alarm_adc": 2000,
-    "clear_adc": 700,
+    "warn_adc": 80,
+    "alarm_adc": 120,
+    "clear_adc": 70,
     "damper_deg": {"open": 90, "half": 45, "closed": 0},
     "response": {"ok": "open", "warn": "half", "alarm": "closed"},
 }

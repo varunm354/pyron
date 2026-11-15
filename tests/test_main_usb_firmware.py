@@ -151,9 +151,11 @@ def test_default_config_matches_known_good_defaults():
             break
     assert default_config is not None, "no module-level `config = {...}` default found"
 
-    assert default_config["warn_adc"] == 1200
-    assert default_config["alarm_adc"] == 2000
-    assert default_config["clear_adc"] == 700
+    # Ronny's bench measurements with the project's MQ-2/divider circuit,
+    # not NASA-derived (NASA data does not supply MQ-2 thresholds).
+    assert default_config["warn_adc"] == 80
+    assert default_config["alarm_adc"] == 120
+    assert default_config["clear_adc"] == 70
     assert default_config["damper_deg"] == {"open": 90, "half": 45, "closed": 0}
     assert default_config["response"] == {"ok": "open", "warn": "half", "alarm": "closed"}
     assert default_config["mode"] == "nasa"

@@ -1,11 +1,23 @@
 {
-  "version": 3,
+  "version": 6,
   "mode": "nasa",
   "simulate": false,
-  "warn_adc": 1200,
-  "alarm_adc": 2000,
-  "clear_adc": 700,
-  "damper_deg": {"open": 90, "half": 45, "closed": 0},
-  "response": {"ok": "open", "warn": "half", "alarm": "closed"},
-  "airflow_cm_s": {"open": 15, "half": 7, "closed": 0}
+  "warn_adc": 80,
+  "alarm_adc": 120,
+  "clear_adc": 70,
+  "damper_deg": {
+    "open": 90,
+    "half": 45,
+    "closed": 0
+  },
+  "response": {
+    "ok": "open",
+    "warn": "half",
+    "alarm": "closed"
+  },
+  "airflow_cm_s": {
+    "open": 15,
+    "half": 7,
+    "closed": 0
+  }
 }
